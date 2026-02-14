@@ -1,0 +1,173 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup VPS and Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 190.7.234.37
+          username: root
+          password: YmUeXJYrO3
+          port: 22
+          command_timeout: 30m
+          script: |
+            echo "🔧 Verificando dependencias..."
+
+            # Verificar Docker
+            if ! command -v docker &> /dev/null; then
+              echo "📦 Instalando Docker..."
+              curl -fsSL https://get.docker.com -o get-docker.sh
+              sh get-docker.sh
+              rm get-docker.sh
+            else
+              echo "✅ Docker ya está instalado"
+            fi
+
+            # Instalar Git si no existe
+            if ! command -v git &> /dev/null; then
+              echo "📦 Instalando Git..."
+              apt update && apt install -y git
+            else
+              echo "✅ Git ya está instalado"
+            fi
+
+            # Verificar versiones
+            echo "📋 Versiones instaladas:"
+            docker --version
+            docker compose version
+            git --version
+
+            # Configurar directorio del proyecto
+            PROJECT_DIR="/opt/valentine-tree"
+
+            # Crear directorio si no existe
+            mkdir -p $PROJECT_DIR
+            cd $PROJECT_DIR
+
+            # Si el repo no existe, clonarlo
+            if [ ! -d ".git" ]; then
+              echo "📦 Clonando repositorio..."
+              git clone https://github.com/rhernandezbas/tree_test.git .
+            else
+              echo "🔄 Actualizando repositorio..."
+              git fetch origin
+              git reset --hard origin/main
+              git pull origin main
+            fi
+
+            # Crear archivo .env si no existe
+            if [ ! -f ".env" ]; then
+              echo "📝 Creando archivo .env..."
+              if [ -f ".env.example" ]; then
+                cp .env.example .env
+              else
+                echo "⚠️  No existe .env.example, creando .env básico..."
+                touch .env
+              fi
+            fi
+
+            # Detener contenedores existentes
+            echo "🛑 Deteniendo contenedores..."
+            docker compose down -v 2>/dev/null || true
+
+            # Limpiar caché de Docker completamente
+            echo "🧹 Limpiando caché de Docker..."
+            docker system prune -af --volumes
+
+            # Construir y levantar con los nuevos cambios
+            echo "🏗️  Construyendo nueva imagen..."
+            if ! docker compose build --no-cache --pull; then
+              echo "❌ Error en el build"
+              docker compose logs
+              exit 1
+            fi
+
+            echo "🚀 Iniciando contenedores..."
+            if ! docker compose up -d; then
+              echo "❌ Error al iniciar contenedores"
+              docker compose logs
+              exit 1
+            fi
+
+            # Esperar a que el contenedor esté listo
+            echo "⏳ Esperando que el servicio esté listo..."
+            sleep 20
+
+            # Mostrar estado detallado
+            echo "📊 Estado de contenedores:"
+            docker compose ps -a
+
+            # Mostrar logs completos si hay error
+            if ! docker compose ps | grep -q "Up"; then
+              echo "❌ Los contenedores no están corriendo. Logs completos:"
+              docker compose logs
+              exit 1
+            fi
+
+            # Mostrar logs recientes
+            echo "📋 Últimos logs:"
+            docker compose logs --tail=50
+
+            echo "✅ Despliegue completado exitosamente"
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 190.7.234.37
+          username: root
+          password: YmUeXJYrO3
+          port: 22
+          script: |
+            cd /opt/valentine-tree
+
+            # Verificar que los contenedores están corriendo
+            echo "📊 Estado detallado de contenedores:"
+            docker compose ps -a
+
+            if docker compose ps | grep -q "Up"; then
+              echo "✅ Contenedores corriendo correctamente"
+              echo ""
+              echo "🌐 Aplicación disponible en: http://190.7.234.37:30082"
+              echo ""
+              echo "📋 Logs de la aplicación:"
+              docker compose logs --tail=20
+
+              # Test de conectividad
+              echo ""
+              echo "🔍 Probando conectividad..."
+              if curl -f http://localhost:30082 > /dev/null 2>&1; then
+                echo "✅ Aplicación responde correctamente"
+              else
+                echo "⚠️  Aplicación no responde aún"
+              fi
+              exit 0
+            else
+              echo "❌ Error: Contenedores no están corriendo"
+              echo ""
+              echo "📋 Logs completos:"
+              docker compose logs
+              echo ""
+              echo "🔍 Inspeccionando contenedor:"
+              docker compose ps -a
+              exit 1
+            fi
+
+      - name: Health check
+        run: |
+          echo "🏥 Verificando salud del servicio..."
+          sleep 10
+          # Opcional: agregar curl para verificar endpoint
+          # curl -f http://190.7.234.37:30082 || exit 1
+          echo "✅ Health check completado"
